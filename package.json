@@ -1,0 +1,33 @@
+{
+  "name": "pi-pr-status",
+  "version": "0.1.0",
+  "description": "A Pi extension that shows the current PR link, CI check status, and unresolved review comments in the footer status bar",
+  "author": "Bruno Garcia",
+  "license": "MIT",
+  "homepage": "https://github.com/bruno-garcia/pi-pr-status#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bruno-garcia/pi-pr-status"
+  },
+  "keywords": ["pi-package", "github", "pull-request", "ci", "pi-extension"],
+  "files": [
+    "extensions/pr-status.ts",
+    "lib/github.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.52.12",
+    "vitest": "^3.0.0"
+  },
+  "pi": {
+    "extensions": ["./extensions"]
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  }
+}
