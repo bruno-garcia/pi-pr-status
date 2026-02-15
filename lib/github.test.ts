@@ -42,9 +42,25 @@ describe("parseChecks", () => {
 		expect(parseChecks(checks)).toEqual({ total: 4, pass: 0, fail: 0, pending: 4 });
 	});
 
-	it("counts missing conclusion as pending", () => {
-		const checks = [{ status: "COMPLETED" }];
-		expect(parseChecks(checks)).toEqual({ total: 1, pass: 0, fail: 0, pending: 1 });
+	it("treats completed with missing conclusion as pass", () => {
+		const checks = [{ name: "deploy", status: "COMPLETED" }];
+		expect(parseChecks(checks)).toEqual({ total: 1, pass: 1, fail: 0, pending: 0 });
+	});
+
+	it("skips ghost checks with all null fields", () => {
+		const checks = [
+			{ conclusion: "SUCCESS", name: "ci", status: "COMPLETED" },
+			{ conclusion: null, name: null, status: null },
+		];
+		expect(parseChecks(checks)).toEqual({ total: 1, pass: 1, fail: 0, pending: 0 });
+	});
+
+	it("skips ghost checks with empty strings", () => {
+		const checks = [
+			{ conclusion: "SUCCESS", name: "ci", status: "COMPLETED" },
+			{ conclusion: "", name: "", status: "" },
+		];
+		expect(parseChecks(checks)).toEqual({ total: 1, pass: 1, fail: 0, pending: 0 });
 	});
 
 	it("handles mixed statuses", () => {

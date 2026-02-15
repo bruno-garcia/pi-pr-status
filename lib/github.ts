@@ -58,9 +58,14 @@ export function parseChecks(statusCheckRollup: unknown[]): CheckStatus {
 	const checks: CheckStatus = { total: 0, pass: 0, fail: 0, pending: 0 };
 	for (const check of statusCheckRollup) {
 		const c = check as Record<string, string>;
-		checks.total++;
 		const conclusion = (c.conclusion || "").toUpperCase();
 		const status = (c.status || "").toUpperCase();
+		const name = c.name || "";
+
+		// Skip ghost checks with no meaningful data (e.g. Vercel deployment statuses)
+		if (!name && !conclusion && !status) continue;
+
+		checks.total++;
 		if (conclusion === "SUCCESS" || conclusion === "NEUTRAL" || conclusion === "SKIPPED") {
 			checks.pass++;
 		} else if (
@@ -74,9 +79,14 @@ export function parseChecks(statusCheckRollup: unknown[]): CheckStatus {
 			status === "IN_PROGRESS" ||
 			status === "QUEUED" ||
 			status === "PENDING" ||
-			status === "WAITING" ||
-			!conclusion
+			status === "WAITING"
 		) {
+			checks.pending++;
+		} else if (status === "COMPLETED") {
+			// Completed but no recognized conclusion — treat as passed
+			checks.pass++;
+		} else {
+			// Unknown state — treat as pending
 			checks.pending++;
 		}
 	}
