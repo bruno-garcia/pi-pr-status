@@ -1,6 +1,6 @@
 {
   "name": "pi-pr-status",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "A Pi extension that shows the current PR link, CI check status, and unresolved review comments in the footer status bar",
   "author": "Bruno Garcia",
   "license": "MIT",
@@ -18,7 +18,6 @@
   ],
   "files": [
     "extensions/pr-status.ts",
-    "lib/github.ts",
     "README.md",
     "LICENSE"
   ],
