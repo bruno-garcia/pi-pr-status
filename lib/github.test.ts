@@ -1,5 +1,36 @@
 import { describe, it, expect } from "vitest";
-import { parseChecks, countUnresolvedThreads, formatStatus, type PrInfo } from "./github.ts";
+import { parseChecks, countUnresolvedThreads, formatStatus, parsePrUrl, type PrInfo } from "./github.ts";
+
+describe("parsePrUrl", () => {
+	it("extracts repo and number from a PR URL", () => {
+		expect(parsePrUrl("https://github.com/owner/repo/pull/42")).toEqual({
+			url: "https://github.com/owner/repo/pull/42",
+			repo: "owner/repo",
+			number: 42,
+		});
+	});
+
+	it("extracts from a PR URL embedded in text", () => {
+		expect(parsePrUrl("lets continue this PR: https://github.com/bruno-garcia/code-review-trends/pull/22")).toEqual({
+			url: "https://github.com/bruno-garcia/code-review-trends/pull/22",
+			repo: "bruno-garcia/code-review-trends",
+			number: 22,
+		});
+	});
+
+	it("returns null for non-PR URLs", () => {
+		expect(parsePrUrl("https://github.com/owner/repo/issues/42")).toBeNull();
+	});
+
+	it("returns null for text without URLs", () => {
+		expect(parsePrUrl("just some text")).toBeNull();
+	});
+
+	it("handles URL with trailing text", () => {
+		const result = parsePrUrl("check https://github.com/a/b/pull/1 please");
+		expect(result).toEqual({ url: "https://github.com/a/b/pull/1", repo: "a/b", number: 1 });
+	});
+});
 
 describe("parseChecks", () => {
 	it("returns zeros for empty array", () => {

@@ -97,6 +97,68 @@ export function countUnresolvedThreads(threads: { isResolved: boolean }[]): numb
 	return threads.filter((t) => !t.isResolved).length;
 }
 
+/** Match GitHub PR URLs: https://github.com/owner/repo/pull/123 */
+export const PR_URL_RE = /https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/;
+
+export function parsePrUrl(text: string): { url: string; repo: string; number: number } | null {
+	const match = text.match(PR_URL_RE);
+	if (!match) return null;
+	return { url: match[0], repo: match[1], number: parseInt(match[2], 10) };
+}
+
+export function getPrByNumber(repo: string, prNumber: number): PrInfo | undefined {
+	try {
+		const json = execSync(
+			`gh pr view ${prNumber} --repo ${repo} --json number,title,url,state,statusCheckRollup`,
+			{
+				encoding: "utf-8",
+				timeout: 10_000,
+				stdio: ["pipe", "pipe", "pipe"],
+			},
+		).trim();
+		if (!json) return undefined;
+		const pr = JSON.parse(json);
+		if (!pr.number || !pr.url) return undefined;
+
+		const checks = Array.isArray(pr.statusCheckRollup)
+			? parseChecks(pr.statusCheckRollup)
+			: { total: 0, pass: 0, fail: 0, pending: 0 };
+
+		const [owner, name] = repo.split("/");
+		let unresolvedThreads = 0;
+		if (owner && name) {
+			try {
+				const gql = execSync(
+					`gh api graphql -f query='{ repository(owner: "${owner}", name: "${name}") { pullRequest(number: ${pr.number}) { reviewThreads(first: 100) { nodes { isResolved } } } } }'`,
+					{
+						encoding: "utf-8",
+						timeout: 10_000,
+						stdio: ["pipe", "pipe", "pipe"],
+					},
+				).trim();
+				const data = JSON.parse(gql);
+				const threads = data?.data?.repository?.pullRequest?.reviewThreads?.nodes;
+				if (Array.isArray(threads)) {
+					unresolvedThreads = countUnresolvedThreads(threads);
+				}
+			} catch {
+				// GraphQL failed — show PR without thread count
+			}
+		}
+
+		return {
+			number: pr.number,
+			title: pr.title,
+			url: pr.url,
+			state: pr.state,
+			checks,
+			unresolvedThreads,
+		};
+	} catch {
+		return undefined;
+	}
+}
+
 export function getPrForBranch(cwd: string, repo?: RepoInfo): PrInfo | undefined {
 	try {
 		const json = execSync("gh pr view --json number,title,url,state,statusCheckRollup", {
