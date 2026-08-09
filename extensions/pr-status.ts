@@ -12,7 +12,6 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { execSync } from "node:child_process";
 
 // --- GitHub helpers (inlined for pi extension compatibility) ---
 
@@ -37,28 +36,26 @@ interface RepoInfo {
 	name: string;
 }
 
-function getBranch(cwd: string): string | undefined {
+async function getBranch(pi: ExtensionAPI, cwd: string): Promise<string | undefined> {
 	try {
-		return execSync("git rev-parse --abbrev-ref HEAD", {
+		const result = await pi.exec("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
 			cwd,
-			encoding: "utf-8",
 			timeout: 3000,
-			stdio: ["pipe", "pipe", "pipe"],
-		}).trim();
+		});
+		return result.code === 0 ? result.stdout.trim() : undefined;
 	} catch {
 		return undefined;
 	}
 }
 
-function getRepoInfo(cwd: string): RepoInfo | undefined {
+async function getRepoInfo(pi: ExtensionAPI, cwd: string): Promise<RepoInfo | undefined> {
 	try {
-		const json = execSync("gh repo view --json owner,name", {
+		const result = await pi.exec("gh", ["repo", "view", "--json", "owner,name"], {
 			cwd,
-			encoding: "utf-8",
 			timeout: 5000,
-			stdio: ["pipe", "pipe", "pipe"],
-		}).trim();
-		const repo = JSON.parse(json);
+		});
+		if (result.code !== 0) return undefined;
+		const repo = JSON.parse(result.stdout.trim());
 		return repo.owner?.login && repo.name ? { owner: repo.owner.login, name: repo.name } : undefined;
 	} catch {
 		return undefined;
@@ -112,18 +109,56 @@ function parsePrUrl(text: string): { url: string; repo: string; number: number }
 	return { url: match[0], repo: match[1], number: parseInt(match[2], 10) };
 }
 
-function getPrByNumber(repo: string, prNumber: number): PrInfo | undefined {
+function reviewThreadsQuery(owner: string, name: string, number: number): string {
+	return `query { repository(owner: "${owner}", name: "${name}") { pullRequest(number: ${number}) { reviewThreads(first: 100) { nodes { isResolved } } } } }`;
+}
+
+async function getUnresolvedThreads(
+	pi: ExtensionAPI,
+	owner: string,
+	name: string,
+	number: number,
+	cwd?: string,
+): Promise<number> {
 	try {
-		const json = execSync(
-			`gh pr view ${prNumber} --repo ${repo} --json number,title,url,state,statusCheckRollup`,
-			{
-				encoding: "utf-8",
-				timeout: 10_000,
-				stdio: ["pipe", "pipe", "pipe"],
-			},
-		).trim();
-		if (!json) return undefined;
-		const pr = JSON.parse(json);
+		const result = await pi.exec(
+			"gh",
+			["api", "graphql", "-f", `query=${reviewThreadsQuery(owner, name, number)}`],
+			{ cwd, timeout: 10_000 },
+		);
+		if (result.code !== 0) return 0;
+		const data = JSON.parse(result.stdout.trim());
+		const threads = data?.data?.repository?.pullRequest?.reviewThreads?.nodes;
+		return Array.isArray(threads)
+			? threads.filter((t: { isResolved: boolean }) => !t.isResolved).length
+			: 0;
+	} catch {
+		// GraphQL failed — show PR without thread count.
+		return 0;
+	}
+}
+
+async function getPrByNumber(
+	pi: ExtensionAPI,
+	repo: string,
+	prNumber: number,
+): Promise<PrInfo | undefined> {
+	try {
+		const result = await pi.exec(
+			"gh",
+			[
+				"pr",
+				"view",
+				String(prNumber),
+				"--repo",
+				repo,
+				"--json",
+				"number,title,url,state,statusCheckRollup",
+			],
+			{ timeout: 10_000 },
+		);
+		if (result.code !== 0 || !result.stdout.trim()) return undefined;
+		const pr = JSON.parse(result.stdout.trim());
 		if (!pr.number || !pr.url) return undefined;
 
 		const checks = Array.isArray(pr.statusCheckRollup)
@@ -131,26 +166,9 @@ function getPrByNumber(repo: string, prNumber: number): PrInfo | undefined {
 			: { total: 0, pass: 0, fail: 0, pending: 0 };
 
 		const [owner, name] = repo.split("/");
-		let unresolvedThreads = 0;
-		if (owner && name) {
-			try {
-				const gql = execSync(
-					`gh api graphql -f query='{ repository(owner: "${owner}", name: "${name}") { pullRequest(number: ${pr.number}) { reviewThreads(first: 100) { nodes { isResolved } } } } }'`,
-					{
-						encoding: "utf-8",
-						timeout: 10_000,
-						stdio: ["pipe", "pipe", "pipe"],
-					},
-				).trim();
-				const data = JSON.parse(gql);
-				const threads = data?.data?.repository?.pullRequest?.reviewThreads?.nodes;
-				if (Array.isArray(threads)) {
-					unresolvedThreads = threads.filter((t: { isResolved: boolean }) => !t.isResolved).length;
-				}
-			} catch {
-				// GraphQL failed — show PR without thread count
-			}
-		}
+		const unresolvedThreads = owner && name
+			? await getUnresolvedThreads(pi, owner, name, pr.number)
+			: 0;
 
 		return {
 			number: pr.number,
@@ -165,41 +183,27 @@ function getPrByNumber(repo: string, prNumber: number): PrInfo | undefined {
 	}
 }
 
-function getPrForBranch(cwd: string, repo?: RepoInfo): PrInfo | undefined {
+async function getPrForBranch(
+	pi: ExtensionAPI,
+	cwd: string,
+	repo?: RepoInfo,
+): Promise<PrInfo | undefined> {
 	try {
-		const json = execSync("gh pr view --json number,title,url,state,statusCheckRollup", {
-			cwd,
-			encoding: "utf-8",
-			timeout: 10_000,
-			stdio: ["pipe", "pipe", "pipe"],
-		}).trim();
-		if (!json) return undefined;
-		const pr = JSON.parse(json);
+		const result = await pi.exec(
+			"gh",
+			["pr", "view", "--json", "number,title,url,state,statusCheckRollup"],
+			{ cwd, timeout: 10_000 },
+		);
+		if (result.code !== 0 || !result.stdout.trim()) return undefined;
+		const pr = JSON.parse(result.stdout.trim());
 		if (!pr.number || !pr.url) return undefined;
 
-		const checks = Array.isArray(pr.statusCheckRollup) ? parseChecks(pr.statusCheckRollup) : { total: 0, pass: 0, fail: 0, pending: 0 };
-
-		let unresolvedThreads = 0;
-		if (repo) {
-			try {
-				const gql = execSync(
-					`gh api graphql -f query='{ repository(owner: "${repo.owner}", name: "${repo.name}") { pullRequest(number: ${pr.number}) { reviewThreads(first: 100) { nodes { isResolved } } } } }'`,
-					{
-						cwd,
-						encoding: "utf-8",
-						timeout: 10_000,
-						stdio: ["pipe", "pipe", "pipe"],
-					},
-				).trim();
-				const data = JSON.parse(gql);
-				const threads = data?.data?.repository?.pullRequest?.reviewThreads?.nodes;
-				if (Array.isArray(threads)) {
-					unresolvedThreads = threads.filter((t: { isResolved: boolean }) => !t.isResolved).length;
-				}
-			} catch {
-				// GraphQL failed — show PR without thread count
-			}
-		}
+		const checks = Array.isArray(pr.statusCheckRollup)
+			? parseChecks(pr.statusCheckRollup)
+			: { total: 0, pass: 0, fail: 0, pending: 0 };
+		const unresolvedThreads = repo
+			? await getUnresolvedThreads(pi, repo.owner, repo.name, pr.number, cwd)
+			: 0;
 
 		return {
 			number: pr.number,
@@ -251,6 +255,7 @@ export default function (pi: ExtensionAPI) {
 	// Only set when the current branch has no active (open) PR of its own.
 	let pinnedPr: { repo: string; number: number } | null = null;
 	let latestCtx: ExtensionContext | null = null;
+	let updateInFlight = false;
 
 	/** Returns true when the current branch has an open PR. */
 	function hasActiveBranchPr(): boolean {
@@ -262,22 +267,22 @@ export default function (pi: ExtensionAPI) {
 		ui.setStatus(STATUS_KEY, lastPr ? formatStatus(lastPr) : undefined);
 	}
 
-	function update(cwd: string, ui: { setStatus: (key: string, value: string | undefined) => void }) {
+	async function update(cwd: string, ui: { setStatus: (key: string, value: string | undefined) => void }) {
 		// If a PR is pinned by URL, use that instead of branch detection
 		if (pinnedPr) {
-			const pr = getPrByNumber(pinnedPr.repo, pinnedPr.number);
+			const pr = await getPrByNumber(pi, pinnedPr.repo, pinnedPr.number);
 			showStatus(pr, ui);
 
 			// If the branch now has its own open PR, drop the pin and let
 			// branch-based detection take over from the next cycle.
 			if (pr) {
-				const branch = getBranch(cwd);
+				const branch = await getBranch(pi, cwd);
 				if (branch && branch !== "HEAD" && branch !== lastBranch) {
 					lastBranch = branch;
 				}
 				if (branch && branch !== "HEAD") {
-					if (!cachedRepo) cachedRepo = getRepoInfo(cwd);
-					const branchPr = getPrForBranch(cwd, cachedRepo);
+					if (!cachedRepo) cachedRepo = await getRepoInfo(pi, cwd);
+					const branchPr = await getPrForBranch(pi, cwd, cachedRepo);
 					if (branchPr && branchPr.state === "OPEN") {
 						pinnedPr = null;
 						showStatus(branchPr, ui);
@@ -287,7 +292,7 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const branch = getBranch(cwd);
+		const branch = await getBranch(pi, cwd);
 
 		if (branch !== lastBranch) {
 			lastBranch = branch;
@@ -300,14 +305,27 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (!cachedRepo) {
-			cachedRepo = getRepoInfo(cwd);
+			cachedRepo = await getRepoInfo(pi, cwd);
 		}
 
-		const pr = getPrForBranch(cwd, cachedRepo);
+		const pr = await getPrForBranch(pi, cwd, cachedRepo);
 		showStatus(pr, ui);
 	}
 
-	function tryPinFromUrl(text: string, ctx: ExtensionContext) {
+	async function refreshStatus(
+		cwd: string,
+		ui: { setStatus: (key: string, value: string | undefined) => void },
+	): Promise<void> {
+		if (updateInFlight) return;
+		updateInFlight = true;
+		try {
+			await update(cwd, ui);
+		} finally {
+			updateInFlight = false;
+		}
+	}
+
+	async function tryPinFromUrl(text: string, ctx: ExtensionContext) {
 		const parsed = parsePrUrl(text);
 		if (!parsed) return;
 
@@ -322,7 +340,7 @@ export default function (pi: ExtensionAPI) {
 		latestCtx = ctx;
 
 		// Fetch and show immediately
-		const pr = getPrByNumber(parsed.repo, parsed.number);
+		const pr = await getPrByNumber(pi, parsed.repo, parsed.number);
 		showStatus(pr, ctx.ui);
 	}
 
@@ -331,7 +349,7 @@ export default function (pi: ExtensionAPI) {
 		if (event.source === "extension") return { action: "continue" as const };
 
 		latestCtx = ctx;
-		tryPinFromUrl(event.text, ctx);
+		void tryPinFromUrl(event.text, ctx);
 
 		return { action: "continue" as const };
 	});
@@ -339,14 +357,14 @@ export default function (pi: ExtensionAPI) {
 	// Also check in before_agent_start for skill/template-expanded text
 	pi.on("before_agent_start", async (event, ctx) => {
 		latestCtx = ctx;
-		tryPinFromUrl(event.prompt, ctx);
+		void tryPinFromUrl(event.prompt, ctx);
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
 		latestCtx = ctx;
-		update(ctx.cwd, ctx.ui);
+		void refreshStatus(ctx.cwd, ctx.ui);
 		timer = setInterval(() => {
-			if (latestCtx) update(latestCtx.cwd, latestCtx.ui);
+			if (latestCtx) void refreshStatus(latestCtx.cwd, latestCtx.ui);
 		}, POLL_INTERVAL);
 	});
 
@@ -356,7 +374,7 @@ export default function (pi: ExtensionAPI) {
 		cachedRepo = undefined;
 		pinnedPr = null;
 		latestCtx = ctx;
-		update(ctx.cwd, ctx.ui);
+		void refreshStatus(ctx.cwd, ctx.ui);
 	});
 
 	pi.on("session_shutdown", async () => {
